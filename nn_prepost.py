@@ -83,14 +83,19 @@ def rotate_augment(clips, labels):
         new_labels.extend([label, label, label, label])
     return new_clips, new_labels
 
-def labels_to_stk(labels, orig_shape, sz, step):
+def labels_to_stk(labels, orig_shape, sz, step, threshold=None):
     rows, cols = orig_shape
-    stk = np.zeros((rows, cols, 3))
+    stk = np.zeros((rows, cols)) if threshold is not None else np.zeros((rows, cols, 3))
     i = 0
-    for r,c in itertools.product(range(int(sz/2), int(rows-sz/2), step), 
-                                 range(int(sz/2), int(cols-sz/2), step)):
-        #assert(len(labels[i].shape) == 1 and (labels[i].shape)[0] == 2)
-        stk[r,c,:] = np.array([labels[i][1], 0, labels[i][0]])#np.argmax(labels[i])
+    max_rows = int(rows-sz/2) if sz%2 == 0 else int(rows-sz/2)-1
+    max_cols = int(cols-sz/2) if sz%2 == 0 else int(cols-sz/2)-1
+    for r,c in itertools.product(range(int(sz/2), max_rows, step), 
+                                 range(int(sz/2), max_cols, step)):
+        assert(len(labels[i].shape) == 1 and (labels[i].shape)[0] == 2)
+        if threshold is not None:
+            stk[r,c] = 1 if np.argmax(labels[i]) == 1 and labels[i][1] > 0.8 else 0 
+        else:
+            stk[r,c,:] = np.array([labels[i][1], 0, labels[i][0]])
         i += 1
     return stk
 
@@ -160,13 +165,14 @@ def nn_stk_pred_to_final_roi_format(pred, eps, min_samples, radius):
 
 def main():
     if len(sys.argv) == 1:
-        print "Usage: python {} clip_sz clip_step min_batch_size num_epochs [load]".format(sys.argv[0])
+        print "Usage: python {} clip_sz clip_step min_batch_size num_epochs prefix [load]".format(sys.argv[0])
         return
     clip_sz = int(sys.argv[1])
     clip_step = int(sys.argv[2])
     min_batch_size = int(sys.argv[3])
     num_epochs = int(sys.argv[4])
-    load = True if (len(sys.argv) > 5 and sys.argv[5] == 'load') else False
+    prefix = '' if (len(sys.argv) <= 5) else sys.argv[5]
+    load = True if (len(sys.argv) > 6 and sys.argv[6] == 'load') else False
     num_hidden_nodes = 1024
     radius = 2
     net = mnist_net_3x3
@@ -215,40 +221,51 @@ def main():
         val_nn_labels = [nn(t[0]) for t in val_clips_labels] 
         test_nn_labels = [nn(t[0]) for t in test_clips_labels]
         # save results
-        pickle.dump(train_nn_labels, open("nn_train_labels.pickle",'wb'))
-        pickle.dump(val_nn_labels, open("nn_val_labels.pickle", 'wb'))
-        pickle.dump(test_nn_labels, open("nn_test_labels.pickle", 'wb'))
+        pickle.dump(train_nn_labels, open(prefix+"nn_train_labels.pickle",'wb'))
+        pickle.dump(val_nn_labels, open(prefix+"nn_val_labels.pickle", 'wb'))
+        pickle.dump(test_nn_labels, open(prefix+"nn_test_labels.pickle", 'wb'))
     else:
-        train_nn_labels = pickle.load(open("nn_train_labels.pickle",'rb'))
-        val_nn_labels = pickle.load(open("nn_val_labels.pickle", 'rb'))
-        test_nn_labels = pickle.load(open("nn_test_labels.pickle", 'rb'))
-    
+        train_nn_labels = pickle.load(open(prefix+"nn_train_labels.pickle",'rb'))
+        val_nn_labels = pickle.load(open(prefix+"nn_val_labels.pickle", 'rb'))
+        test_nn_labels = pickle.load(open(prefix+"nn_test_labels.pickle", 'rb'))
+
     # convert predictions back to 1/0 arrays
-    train_nn_pred_stk = [labels_to_stk(x, train_data[0][1].shape, clip_sz, clip_step) for x in train_nn_labels] 
-    val_nn_pred_stk = [labels_to_stk(x, val_data[0][1].shape, clip_sz, clip_step) for x in val_nn_labels]
-    test_nn_pred_stk = [labels_to_stk(x, test_data[0][1].shape, clip_sz, clip_step) for x in test_nn_labels]
+    threshold = None
+    train_nn_pred_stk = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in train_nn_labels] 
+    val_nn_pred_stk = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in val_nn_labels]
+    test_nn_pred_stk = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in test_nn_labels]
 
     # plot things
+    thresh = "_thresh" if threshold is not None else ""
+    plt.figure()
+    plt.imshow(train_data[0][0].squeeze(), cmap="Greys")
+    plt.savefig(prefix+"nn_train_raw.png")
     plt.figure()
     plt.imshow(train_data[0][1])
-    plt.savefig("nn_train_actual.png")
+    plt.savefig(prefix+"nn_train_actual.png")
     plt.figure()
-    plt.imshow(train_nn_pred_stk[0])#, cmap="Greys")
-    plt.savefig("nn_train_pred.png")
+    plt.imshow(train_nn_pred_stk[0])
+    plt.savefig(prefix+"nn_train_pred"+thresh+".png")
    
     plt.figure()
+    plt.imshow(test_data[0][0].squeeze(), cmap="Greys")
+    plt.savefig(prefix+"nn_test0_raw.png")
+    plt.figure()
     plt.imshow(test_data[0][1])
-    plt.savefig("nn_test0_actual.png")
+    plt.savefig(prefix+"nn_test0_actual.png")
     plt.figure()
     plt.imshow(test_nn_pred_stk[0])
-    plt.savefig("nn_test0_pred.png")
+    plt.savefig(prefix+"nn_test0_pred"+thresh+".png")
 
     plt.figure()
+    plt.imshow(test_data[1][0].squeeze(), cmap="Greys")
+    plt.savefig(prefix+"test1_raw.png")
+    plt.figure()
     plt.imshow(test_data[1][1])
-    plt.savefig("nn_test1_actual.png")
+    plt.savefig(prefix+"nn_test1_actual.png")
     plt.figure()
     plt.imshow(test_nn_pred_stk[1])
-    plt.savefig("nn_test1_pred.png")
+    plt.savefig(prefix+"nn_test1_pred"+thresh+".png")
 
     return
 
