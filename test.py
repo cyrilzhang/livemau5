@@ -3,8 +3,6 @@ import numpy as np
 from itertools import chain
 import random
 
-from load import *
-
 class TestSet: 
     """Stores test set or validation set data and images.
     
@@ -49,19 +47,18 @@ class Score:
     self.overlap_bqs      = list of dicts as in self.total_overlap_bq with one dict per image stack                   
     """
     def __init__(self, prediction_func, data, actual_labels, predicted_labels=None):
-    	if predicted_labels is None:
+        if predicted_labels is None:
             self.predictions = prediction_func(data)
         else:
             self.predictions = predicted_labels
         # assert that predicted and true ROI stacks are the same shape
-        assert(all([self.predictions[i].shape[1] == actual_labels[i].shape[1] 
-                    for i in range(len(actual_labels))]))
+        assert(self.predictions[0].shape[1] == actual_labels[0].shape[1])
         # assert that predicted ROI stacks are 0-1 arrays
-        assert(all([np.all(np.logical_or(self.predictions[i] == 1, self.predictions[i] == 0)) 
-                    for i in range(len(self.predictions))]))
+        for i in range(len(self.predictions)):
+            assert(np.all(np.logical_or(self.predictions[i] == 1, self.predictions[i] == 0)))
         self.categorized = categorize(self.predictions, actual_labels)
         self.precisions, self.total_precision, self.recalls, self.total_recall = calc_precision_recall(self.categorized)
-        self.f1_scores = map(calc_f1_score, zip(self.precisions, self.recalls))
+        self.f1_scores = list(map(calc_f1_score, zip(self.precisions, self.recalls)))
         self.total_f1_score = calc_f1_score((self.total_precision, self.total_recall))
         self.overlap_bqs, self.total_overlap_bq = overlap_boundary_quality(self.categorized)
        
@@ -92,19 +89,18 @@ class Score:
 def categorize(predictions, labels):
     "Divide predictions and labels into FPs, FNs, and TPs"
     categorized = []
-    for i in range(len(predictions)):
-        categorized.append({"fps":[], "fns":[], "tps":[]})
-        rois_pred, rois_true = list(predictions[i].copy()), list(labels[i].copy())
-        for roi_pred in rois_pred:
-            overlaps = map(lambda roi_true: calc_overlap(roi_pred, roi_true)[0], rois_true)
-            best_overlap, best_index = np.max(overlaps), np.argmax(overlaps)
-            if best_overlap > 0.5:
-                categorized[i]["tps"].append((roi_pred, rois_true[best_index]))
-                del rois_true[best_index]
-            else:
-                categorized[i]["fps"].append(roi_pred)
-        for roi_true in rois_true:
-            categorized[i]["fns"].append(roi_true)
+    rois_pred, rois_true = list(predictions.copy()), list(labels.copy())
+    categorized.append({"fps":[], "fns":[], "tps":[]})
+    for roi_pred in rois_pred:
+        overlaps = list(map(lambda roi_true: calc_overlap(roi_pred, roi_true)[0], rois_true))
+        best_overlap, best_index = np.max(overlaps), np.argmax(overlaps)
+        if best_overlap > 0.5:
+            categorized[0]["tps"].append((roi_pred, rois_true[best_index]))
+            del rois_true[best_index]
+        else:
+            categorized[0]["fps"].append(roi_pred)
+    for roi_true in rois_true:
+        categorized[0]["fns"].append(roi_true)
     return categorized
 
 def calc_precision_recall(categorized):
@@ -112,10 +108,10 @@ def calc_precision_recall(categorized):
     num_fps = [len(categorized[i]["fps"]) for i in range(len(categorized))]
     num_fns = [len(categorized[i]["fns"]) for i in range(len(categorized))]
     num_pairs = [len(categorized[i]["tps"]) for i in range(len(categorized))]
-    precisions = [num_pairs[i] / float(num_pairs[i] + num_fps[i]) if num_pairs[i] + num_fps[i] != 0 else 0 for i in range(len(categorized))]
-    recalls = [num_pairs[i] / float(num_pairs[i] + num_fns[i]) if num_pairs[i] + num_fns[i] != 0 else 0 for i in range(len(categorized))]
-    total_precision = sum(num_pairs) / float(sum(num_pairs) + sum(num_fps)) if sum(num_pairs) + sum(num_fps) != 0 else 0
-    total_recall = sum(num_pairs) / float(sum(num_pairs) + sum(num_fns)) if sum(num_pairs) + sum(num_fns) != 0 else 0
+    precisions = [num_pairs[i] / float(num_pairs[i] + num_fps[i]) for i in range(len(categorized))]
+    recalls = [num_pairs[i] / float(num_pairs[i] + num_fns[i]) for i in range(len(categorized))]
+    total_precision = sum(num_pairs) / float(sum(num_pairs) + sum(num_fps))
+    total_recall = sum(num_pairs) / float(sum(num_pairs) + sum(num_fns))
     return precisions, total_precision, recalls, total_recall
     
 def calc_overlap(roi_pred, roi_true):
@@ -139,8 +135,9 @@ def calc_overlap(roi_pred, roi_true):
     overlap = intersection / union
     return overlap, precision, recall
 
-def calc_f1_score((precision, recall)):
+def calc_f1_score(pr):
     """F1 score is harmonic mean of precision and recall"""
+    precision, recall = pr
     if recall == 0:
         return 0 
     else:
@@ -188,7 +185,7 @@ def plot_multiple_scores(scores):
     plt.plot(r, p, '.-', markersize=10)
     plt.xlabel('Recall')
     plt.ylabel('Precision')
-    print "Score Number in order of increasing recall: " + str(num)
+    print("Score Number in order of increasing recall: " + str(num))
     
     pr_boundary_fig = plt.figure()
     recalls = [s.total_overlap_bq["mean recall"] for s in scores]
@@ -199,7 +196,6 @@ def plot_multiple_scores(scores):
     plt.errorbar(rm, pm, xerr=rs, yerr=ps, fmt='.-',markersize=10)
     plt.xlabel('Recall')
     plt.ylabel('Precision')
-    print "Score number in order of increasing boundary recall: " + str(num)
+    print("Score number in order of increasing boundary recall: " + str(num))
     
     plt.show()
-
