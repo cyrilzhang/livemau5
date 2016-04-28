@@ -3,6 +3,7 @@ import tensorflow as tf
 import sys
 import matplotlib.pyplot as plt
 from random import sample
+import pickle
 
 IMG_CHANNELS = 1
 
@@ -54,7 +55,7 @@ def make_batches(input, batch_size):
     return [np.array(input[i:i+batch_size]) for i in xrange(0, len(input), batch_size)]
 
 def train_nn(train_input, train_labels, val_input, val_labels, 
-             conv_layer_params, num_hidden_nodes, num_epochs, batch_size):
+             conv_layer_params, num_hidden_nodes, num_epochs, batch_size, prefix=''):
     img_sz = train_input[0].shape[0]
     #batch_size = find_even_batch_size(train_input, min_batch_size)
     print "Batch Size: {}".format(batch_size)
@@ -70,6 +71,7 @@ def train_nn(train_input, train_labels, val_input, val_labels,
                                           num_hidden_nodes, keep_prob)
  
     saver = tf.train.Saver(max_to_keep=1)
+    saver2 = tf.train.Saver(max_to_keep=1)
     with tf.Session() as sess:
         init = tf.initialize_all_variables()
         sess.run(init)
@@ -105,22 +107,15 @@ def train_nn(train_input, train_labels, val_input, val_labels,
             if val_loss_per_epoch[epoch] < best_loss:
                 best_loss = val_loss_per_epoch[epoch]
                 best_epoch = epoch
-                saver.save(sess,  "nn_best.ckpt")
-        saver.restore(sess, "nn_best.ckpt")
+                saver.save(sess,  prefix+"nn_best.ckpt")
         
-        # plot losses
-        fig, ax = plt.subplots(2, sharex=True)
-        ax[0].plot(range(len(train_loss_per_epoch)), train_loss_per_epoch, label="training loss",c='b')
-        ax[1].plot(range(len(val_loss_per_epoch)), val_loss_per_epoch, label="validation loss", c='g')
-        plt.legend()
-        plt.xlabel("epoch")
-        plt.ylabel("mean cross-entropy loss")
-        plt.axvline(best_epoch, linewidth=2, color='r')
-        plt.savefig("loss_curves_nn.png")
+        saver2.save(sess, prefix+"last_epoch.ckpt")
+        pickle.dump(train_loss_per_epoch, open(prefix+"train_loss.pickle", 'wb'))
+        pickle.dump(val_loss_per_epoch, open(prefix+"val_loss.pickle", 'wb'))
         
-        def nn(inputs):
+        def nn(inputs, saved_net):
             session = tf.Session()
-            saver.restore(session, "nn_best.ckpt")
+            saver.restore(session, saved_net)
             batched_inputs = make_batches(inputs, batch_size)
             all_probs = []
             for batch in xrange(len(batched_inputs)):
@@ -131,4 +126,4 @@ def train_nn(train_input, train_labels, val_input, val_labels,
                 all_probs.extend([prob_vals[i,:] for i in range(prob_vals.shape[0])])
             return all_probs
 
-        return nn
+        return (lambda x: nn(x, prefix+"nn_best.ckpt")), (lambda x: nn(x, prefix+"last_epoch.ckpt"))

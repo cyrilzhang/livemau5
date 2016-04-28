@@ -13,6 +13,7 @@ from test import *
 from nn_arch import *
 from nn import train_nn
 from random import sample, shuffle
+from scipy.misc import imresize
 
 IMG_CHANNELS = 1
 DOWNSCALE_FACTOR = 2
@@ -45,7 +46,18 @@ def get_centroids(rois, radius):
 def preprocess(data, radius):
     for i, (stk,roi) in enumerate(data):
         # Normalize
-        stk = np.divide(stk - stk.mean(), np.max(stk) - np.min(stk))
+        low_p = np.percentile(stk.flatten(), 3)
+        high_p = np.percentile(stk.flatten(), 99)
+        #print np.min(stk.flatten()), low_p, high_p, np.max(stk.flatten())
+        stk = np.clip(stk, low_p, high_p)
+        stk = stk - stk.mean()
+        stk = np.divide(stk-np.min(stk), np.max(stk) - np.min(stk))
+        #print np.min(stk.flatten()),  np.max(stk.flatten())
+#        plt.figure()
+#        plt.hist(stk.flatten())
+#        plt.figure()
+#        plt.imshow(stk[0], cmap="gray")
+#        plt.show()
         # Downscale
         stk = downscale_local_mean(stk, (1,DOWNSCALE_FACTOR,DOWNSCALE_FACTOR))
         roi = downscale_local_mean(roi, (1,DOWNSCALE_FACTOR,DOWNSCALE_FACTOR))
@@ -54,8 +66,11 @@ def preprocess(data, radius):
         #new_stk[:,:,2] = stk.max(axis=0)
         #new_stk[:,:,1] = np.std(stk, axis=0)
         new_stk[:,:,0] = np.mean(stk, axis=0)
+#        plt.figure()
+#        plt.imshow(new_stk[:,:,0], cmap="gray")
+#        plt.show()
         roi_centroids = get_centroids(roi, radius).max(axis=0)
-        data[i] = (new_stk, roi_centroids, roi.max(axis=0))
+        data[i] = (new_stk, roi.max(axis=0), roi.max(axis=0))#(new_stk, roi_centroids, roi.max(axis=0))
     return data
        
 def clips_and_labels_stk(data, sz, step):
@@ -93,7 +108,7 @@ def labels_to_stk(labels, orig_shape, sz, step, threshold=None):
                                  range(int(sz/2), max_cols, step)):
         assert(len(labels[i].shape) == 1 and (labels[i].shape)[0] == 2)
         if threshold is not None:
-            stk[r,c] = 1 if np.argmax(labels[i]) == 1 and labels[i][1] > 0.8 else 0 
+            stk[r,c] = 1 if np.argmax(labels[i]) == 1 and labels[i][1] > threshold else 0 
         else:
             stk[r,c] = labels[i][1] - labels[i][0]#np.array([labels[i][1], 0, labels[i][0]])
         i += 1
@@ -118,8 +133,8 @@ def train_threshold_hyperparameters(pred, actual):
     best_parameters = (0,0,0)
     best_score = 0
     eps_test = [0.00794] #np.logspace(-2.5,-1.5,6)
-    min_samples_test = [32] #np.linspace(20,40,6)
-    radius_test = [7.8] #np.linspace(3,15,6)
+    min_samples_test = [32] #np.linspace(20,70,6)
+    radius_test = [3.9] #np.linspace(3,15,6)
     i = 0
     for eps, min_samples, radius in itertools.product(eps_test, min_samples_test, radius_test):
         predictions = nn_stk_pred_to_final_roi_format(pred, eps, min_samples, radius)
@@ -136,14 +151,26 @@ def nn_stk_pred_to_points(labels):
     for x in range(labels.shape[0]):
         for y in range(labels.shape[1]):
             if labels[x,y] == 1:
-                pts.append((x/512., y/512.))
+                pts.append((x/(512./DOWNSCALE_FACTOR), y/(512./DOWNSCALE_FACTOR)))
     return pts
 
 def nn_stk_pred_to_final_roi_format(pred, eps, min_samples, radius):
     pred = pred.squeeze()
-    pred_pts =nn_stk_pred_to_points(pred)
-    dbscan = DBSCAN(metric='manhattan', eps=eps, min_samples=min_samples)
+    pred_pts = nn_stk_pred_to_points(pred)
+    dbscan = DBSCAN(metric='euclidean', eps=eps, min_samples=min_samples)
     clusters = dbscan.fit_predict(pred_pts)
+    print set(clusters)
+
+    
+#    plt.figure()
+#    plt.imshow(pred, cmap="gray")
+#    plt.figure()
+#    x,y = zip(*pred_pts)
+#    plt.scatter(map(lambda x: x*256, y),map(lambda x: (1-x)*256, x), marker='.', lw=0, c=clusters)
+#    plt.xlim((0,256))
+#    plt.ylim((0,256))
+    
+
     z = zip(clusters, pred_pts)
     centroids = []
     for s in set(clusters):
@@ -152,14 +179,21 @@ def nn_stk_pred_to_final_roi_format(pred, eps, min_samples, radius):
         cluster, pts = zip(*pts_in_cluster)
         xs, ys = zip(*pts)
         xmean, ymean = np.mean(xs), np.mean(ys)
-        centroids.append((xmean*512,ymean*512))
-    final_predictions = np.zeros((len(centroids),512,512))
+        centroids.append((xmean*(512),ymean*(512)))
+    final_predictions = np.zeros((len(centroids),(512),(512)))
     for i,(cx,cy) in enumerate(centroids):
         for x in range(512):
             for y in range(512):
                 if abs(x-cx) > radius or abs(y-cy) > radius: continue
                 elif np.sqrt((y-cy)**2 + (x-cx)**2) <= radius:
                     final_predictions[i,x,y] = 1
+
+#    plt.figure()
+#    plt.imshow(final_predictions.max(axis=0), cmap="gray")
+#    plt.xlim((0,512))
+#    plt.ylim((0,512))
+#    plt.show()
+
     return final_predictions
 
 
@@ -173,10 +207,11 @@ def main():
     num_epochs = int(sys.argv[4])
     prefix = '' if (len(sys.argv) <= 5) else sys.argv[5]
     load = True if (len(sys.argv) > 6 and sys.argv[6] == 'load') else False
-    num_hidden_nodes = 1024
+    num_hidden_nodes = 10
     radius = 2
-    net = mnist_net_3x3
+    net = mnist_net_7x7
 
+    data_raw = load_data()
     data = preprocess(load_data(), radius)
     train_data = data[0:8]
     val_data = data[8:10]
@@ -215,25 +250,38 @@ def main():
     print "Number of training frames: {}".format(len(train_clips_rot_all))    
     if not load:
         # train neural net
-        nn = train_nn(train_clips_rot_all, train_labels_rot_all, val_clips_rot_all, val_labels_rot_all, net, num_hidden_nodes, num_epochs, batch_size)
+        nn_best_val, nn_last_epoch = train_nn(train_clips_rot_all, train_labels_rot_all, val_clips_rot_all, val_labels_rot_all, net, num_hidden_nodes, num_epochs, batch_size, prefix=prefix)
         # classify data
-        train_nn_labels = [nn(t[0]) for t in train_clips_labels] 
-        val_nn_labels = [nn(t[0]) for t in val_clips_labels] 
-        test_nn_labels = [nn(t[0]) for t in test_clips_labels]
+        train_nn_labels_best_val = [nn_best_val(t[0]) for t in train_clips_labels] 
+        val_nn_labels_best_val = [nn_best_val(t[0]) for t in val_clips_labels] 
+        test_nn_labels_best_val = [nn_best_val(t[0]) for t in test_clips_labels]
+        train_nn_labels_last_epoch = [nn_last_epoch(t[0]) for t in train_clips_labels] 
+        val_nn_labels_last_epoch = [nn_last_epoch(t[0]) for t in val_clips_labels] 
+        test_nn_labels_last_epoch = [nn_last_epoch(t[0]) for t in test_clips_labels]
         # save results
-        pickle.dump(train_nn_labels, open(prefix+"nn_train_labels.pickle",'wb'))
-        pickle.dump(val_nn_labels, open(prefix+"nn_val_labels.pickle", 'wb'))
-        pickle.dump(test_nn_labels, open(prefix+"nn_test_labels.pickle", 'wb'))
+        pickle.dump(train_nn_labels_best_val, open(prefix+"nn_train_labels_best_val.pickle",'wb'))
+        pickle.dump(val_nn_labels_best_val, open(prefix+"nn_val_labels_best_val.pickle", 'wb'))
+        pickle.dump(test_nn_labels_best_val, open(prefix+"nn_test_labels_best_val.pickle", 'wb'))
+        pickle.dump(train_nn_labels_last_epoch, open(prefix+"nn_train_labels_last_epoch.pickle",'wb'))
+        pickle.dump(val_nn_labels_last_epoch, open(prefix+"nn_val_labels_last_epoch.pickle", 'wb'))
+        pickle.dump(test_nn_labels_last_epoch, open(prefix+"nn_test_labels_last_epoch.pickle", 'wb'))
+    
     else:
-        train_nn_labels = pickle.load(open(prefix+"nn_train_labels.pickle",'rb'))
-        val_nn_labels = pickle.load(open(prefix+"nn_val_labels.pickle", 'rb'))
-        test_nn_labels = pickle.load(open(prefix+"nn_test_labels.pickle", 'rb'))
+        train_nn_labels_best_val = pickle.load(open(prefix+"nn_train_labels_best_val.pickle",'rb'))
+        val_nn_labels_best_val = pickle.load(open(prefix+"nn_val_labels_best_val.pickle", 'rb'))
+        test_nn_labels_best_val = pickle.load(open(prefix+"nn_test_labels_best_val.pickle", 'rb'))
+        train_nn_labels_last_epoch = pickle.load(open(prefix+"nn_train_labels_last_epoch.pickle",'rb'))
+        val_nn_labels_last_epoch = pickle.load(open(prefix+"nn_val_labels_last_epoch.pickle", 'rb'))
+        test_nn_labels_last_epoch = pickle.load(open(prefix+"nn_test_labels_last_epoch.pickle", 'rb'))
 
     # convert predictions back to 1/0 arrays
-    threshold = None
-    train_nn_pred_stk = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in train_nn_labels] 
-    val_nn_pred_stk = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in val_nn_labels]
-    test_nn_pred_stk = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in test_nn_labels]
+    threshold = 0.7
+    train_nn_pred_stk_best_val = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in train_nn_labels_best_val] 
+    val_nn_pred_stk_best_val = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in val_nn_labels_best_val]
+    test_nn_pred_stk_best_val = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in test_nn_labels_best_val]
+    train_nn_pred_stk_last_epoch = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in train_nn_labels_last_epoch] 
+    val_nn_pred_stk_last_epoch = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in val_nn_labels_last_epoch]
+    test_nn_pred_stk_last_epoch = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in test_nn_labels_last_epoch]
 
     # plot things
     thresh = "_thresh" if threshold is not None else ""
@@ -244,8 +292,11 @@ def main():
     plt.imshow(train_data[0][1], cmap="gray")
     plt.savefig(prefix+"nn_train_actual.png")
     plt.figure()
-    plt.imshow(train_nn_pred_stk[0], cmap="gray")
-    plt.savefig(prefix+"nn_train_pred"+thresh+".png")
+    plt.imshow(train_nn_pred_stk_best_val[0], cmap="gray")
+    plt.savefig(prefix+"nn_train_pred_best_val"+str(thresh)+".png")
+    plt.figure()
+    plt.imshow(train_nn_pred_stk_last_epoch[0], cmap="gray")
+    plt.savefig(prefix+"nn_train_pred_last_epoch"+str(thresh)+".png")
    
     plt.figure()
     plt.imshow(test_data[0][0].squeeze(), cmap="gray")
@@ -254,8 +305,11 @@ def main():
     plt.imshow(test_data[0][1], cmap="gray")
     plt.savefig(prefix+"nn_test0_actual.png")
     plt.figure()
-    plt.imshow(test_nn_pred_stk[0], cmap="gray")
-    plt.savefig(prefix+"nn_test0_pred"+thresh+".png")
+    plt.imshow(test_nn_pred_stk_best_val[0], cmap="gray")
+    plt.savefig(prefix+"nn_test0_pred_best_val"+str(thresh)+".png")
+    plt.figure()
+    plt.imshow(test_nn_pred_stk_last_epoch[0], cmap="gray")
+    plt.savefig(prefix+"nn_test0_pred_last_epoch"+str(thresh)+".png")
 
     plt.figure()
     plt.imshow(test_data[1][0].squeeze(), cmap="gray")
@@ -264,21 +318,29 @@ def main():
     plt.imshow(test_data[1][1], cmap="gray")
     plt.savefig(prefix+"nn_test1_actual.png")
     plt.figure()
-    plt.imshow(test_nn_pred_stk[1], cmap="gray")
-    plt.savefig(prefix+"nn_test1_pred"+thresh+".png")
+    plt.imshow(test_nn_pred_stk_best_val[1], cmap="gray")
+    plt.savefig(prefix+"nn_test1_pred_best_val"+str(thresh)+".png")
+    plt.figure()
+    plt.imshow(test_nn_pred_stk_last_epoch[1], cmap="gray")
+    plt.savefig(prefix+"nn_test1_pred_last_epoch"+str(thresh)+".png")
 
-    return
+    #return
 
     # convert stacked predictions to final ROI format
-    eps, min_samples, final_radius = train_threshold_hyperparameters(val_nn_pred_stk[0], val_data[0][1].max(axis=1))
+    #eps, min_samples, final_radius = train_threshold_hyperparameters(val_nn_pred_stk_best_val[0], val_data[0][1])
+    eps, min_samples, final_radius = (0.0254, 72, 7.8)
     print "eps: {}\nmin_samples: {}\nradius: {}\n".format(eps, min_samples, radius)
-    train_nn_pred_final = [nn_stk_pred_to_final_roi_format(x, eps, min_samples, final_radius) for x in train_nn_pred_stk]
-    val_nn_pred_final = [nn_stk_pred_to_final_roi_format(x, eps, min_samples, final_radius) for x in val_nn_pred_stk]
-    test_nn_pred_final = [nn_stk_pred_to_final_roi_format(x, eps, min_samples, final_radius) for x in test_nn_pred_stk]
-    
+    train_nn_pred_final = [nn_stk_pred_to_final_roi_format(x, eps, min_samples, final_radius) for x in train_nn_pred_stk_best_val]
+    val_nn_pred_final = [nn_stk_pred_to_final_roi_format(x, eps, min_samples, final_radius) for x in val_nn_pred_stk_best_val]
+    test_nn_pred_final = [nn_stk_pred_to_final_roi_format(x, eps, min_samples, final_radius) for x in test_nn_pred_stk_best_val]
+
     # get final score
-    actual_train_labels = [t[1] for t in train_data]
-    actual_test_labels = [t[1] for t in test_data]
+    actual_train_labels = [t[1] for t in data_raw[0:8]]
+    actual_test_labels = [t[1] for t in data_raw[10:12]]
+    print actual_train_labels[0].shape
+    print train_nn_pred_final[0].shape
+    print actual_test_labels[0].shape
+    print test_nn_pred_final[0].shape
     train_score = Score(None, None, actual_train_labels, train_nn_pred_final)
     test_score = Score(None, None, actual_test_labels, test_nn_pred_final)
     print str(train_score)
@@ -289,13 +351,16 @@ def main():
     train_score.plot()
     test_score.plot()
 
-    plt.figure()
-    plt.imshow(train_nn_pred_final[0].max(axis=1), cmap="Greys")
-    plt.savefig("nn_train_final.png")
+    plt.show()
+    return
 
     plt.figure()
-    plt.imshow(test_nn_pred_final[0].max(axis=1), cmap="Greys")
-    plt.savefig("nn_test_final.png")
+    plt.imshow(train_nn_pred_final[0].max(axis=0), cmap="gray")
+    plt.savefig(prefix+"nn_train_final.png")
+
+    plt.figure()
+    plt.imshow(test_nn_pred_final[0].max(axis=0), cmap="gray")
+    plt.savefig(prefix+"nn_test_final.png")
     
     # show all the plots!
     plt.show()
