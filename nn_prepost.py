@@ -85,7 +85,7 @@ def rotate_augment(clips, labels):
 
 def labels_to_stk(labels, orig_shape, sz, step, threshold=None):
     rows, cols = orig_shape
-    stk = np.zeros((rows, cols)) if threshold is not None else np.zeros((rows, cols, 3))
+    stk = np.zeros((rows, cols)) #if threshold is not None else np.zeros((rows, cols))
     i = 0
     max_rows = int(rows-sz/2) if sz%2 == 0 else int(rows-sz/2)-1
     max_cols = int(cols-sz/2) if sz%2 == 0 else int(cols-sz/2)-1
@@ -95,7 +95,7 @@ def labels_to_stk(labels, orig_shape, sz, step, threshold=None):
         if threshold is not None:
             stk[r,c] = 1 if np.argmax(labels[i]) == 1 and labels[i][1] > 0.8 else 0 
         else:
-            stk[r,c,:] = np.array([labels[i][1], 0, labels[i][0]])
+            stk[r,c] = labels[i][1] - labels[i][0]#np.array([labels[i][1], 0, labels[i][0]])
         i += 1
     return stk
 
@@ -238,33 +238,33 @@ def main():
     # plot things
     thresh = "_thresh" if threshold is not None else ""
     plt.figure()
-    plt.imshow(train_data[0][0].squeeze(), cmap="Greys")
+    plt.imshow(train_data[0][0].squeeze(), cmap="gray")
     plt.savefig(prefix+"nn_train_raw.png")
     plt.figure()
-    plt.imshow(train_data[0][1])
+    plt.imshow(train_data[0][1], cmap="gray")
     plt.savefig(prefix+"nn_train_actual.png")
     plt.figure()
-    plt.imshow(train_nn_pred_stk[0])
+    plt.imshow(train_nn_pred_stk[0], cmap="gray")
     plt.savefig(prefix+"nn_train_pred"+thresh+".png")
    
     plt.figure()
-    plt.imshow(test_data[0][0].squeeze(), cmap="Greys")
+    plt.imshow(test_data[0][0].squeeze(), cmap="gray")
     plt.savefig(prefix+"nn_test0_raw.png")
     plt.figure()
-    plt.imshow(test_data[0][1])
+    plt.imshow(test_data[0][1], cmap="gray")
     plt.savefig(prefix+"nn_test0_actual.png")
     plt.figure()
-    plt.imshow(test_nn_pred_stk[0])
+    plt.imshow(test_nn_pred_stk[0], cmap="gray")
     plt.savefig(prefix+"nn_test0_pred"+thresh+".png")
 
     plt.figure()
-    plt.imshow(test_data[1][0].squeeze(), cmap="Greys")
+    plt.imshow(test_data[1][0].squeeze(), cmap="gray")
     plt.savefig(prefix+"test1_raw.png")
     plt.figure()
-    plt.imshow(test_data[1][1])
+    plt.imshow(test_data[1][1], cmap="gray")
     plt.savefig(prefix+"nn_test1_actual.png")
     plt.figure()
-    plt.imshow(test_nn_pred_stk[1])
+    plt.imshow(test_nn_pred_stk[1], cmap="gray")
     plt.savefig(prefix+"nn_test1_pred"+thresh+".png")
 
     return
