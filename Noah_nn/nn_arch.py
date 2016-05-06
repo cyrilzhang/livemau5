@@ -144,11 +144,7 @@ threelayer_753x32 = [
      'pooling padding': 'SAME'}
 ]
 
-
-
-
-
-mnist_net_7x7 = [
+twolayer_7x32 = [
     {'conv function': tf.nn.conv2d,
      'conv kshape':  [7,7,IMG_CHANNELS,32],
      'bias shape':   [32],
@@ -170,7 +166,7 @@ mnist_net_7x7 = [
      'pooling padding': 'SAME'}
     ]
 
-mnist_net_3x3 = [
+twolayer_3x32 = [
     {'conv function': tf.nn.conv2d,
      'conv kshape':  [3,3,IMG_CHANNELS,32],
      'bias shape':   [32],

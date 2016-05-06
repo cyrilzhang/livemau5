@@ -6,13 +6,21 @@ from skimage.transform import downscale_local_mean
 import itertools
 import os.path
 from matplotlib.patches import Rectangle
+from random import sample, shuffle
+from skimage import measure
+from scipy.ndimage import zoom
+from scipy import ndimage as ndi
+from skimage.morphology import watershed
+from skimage.feature import peak_local_max
+from skimage.morphology import remove_small_objects
 from load import *
 from test import *
 from nn_arch import *
 from nn import train_nn
-from random import sample, shuffle
-from skimage import measure
-from scipy.ndimage import zoom
+
+########################
+# Helper Functions
+########################
 
 def load_data():
     # generate filenames
@@ -112,6 +120,99 @@ def flatten(data, flatten_fn):
         new_data.append((new_stk, new_roi))
     return new_data
 
+def combine_stks(stks, weights):
+    combined_stks = []
+    for i in range(len(stks[0])):
+        combined_stk = np.zeros(stks[0][i].shape)
+        for j in range(len(stks)):
+            combined_stk = combined_stk + weights[j] * stks[j][i]
+        combined_stks.append(combined_stk)        
+    return combined_stks
+
+def stk_to_rois(stk, threshold, min_size, max_window=8, downscale_factor=2):
+    thresholded_stk = stk > threshold
+    thresholded_stk = remove_small_objects(thresholded_stk, min_size)
+    distance = ndi.distance_transform_edt(thresholded_stk)
+    cropped_stk = stk.copy()
+    cropped_stk[np.logical_not(thresholded_stk)] = 0
+    combined_stk = cropped_stk + distance/distance.max()
+    local_max = peak_local_max(combined_stk, indices=False, 
+                               footprint=np.ones((max_window, max_window)), 
+                               labels=thresholded_stk)
+    markers = ndi.label(local_max)[0]
+    labels = watershed(-combined_stk, markers, mask=thresholded_stk)
+    new_markers = markers.copy()
+    for i in set(labels.flatten()):
+        if i == 0: continue
+        if np.sum(labels==i) < min_size:
+            new_markers[markers==i] = 0
+    labels = watershed(-combined_stk, new_markers, mask=thresholded_stk)
+    labels_set = set(labels.flatten())
+    rois = []
+    for label in labels_set:
+        if label == 0: continue
+        if np.sum((labels==label).astype(int)) < min_size: continue
+        nroi = np.zeros((stk.shape[0], stk.shape[1]))
+        cx,cy = np.where(labels==label)
+        cx,cy = int(cx.mean()), int(cy.mean())
+        x,y = np.ogrid[0:nroi.shape[0], 0:nroi.shape[1]]
+        r = 4
+        mask =  (cx-x)**2 + (cy-y)**2 <= r*r
+        nroi[mask] = 1
+        #nroi[labels==label] = 1
+        rois.append(zoom(nroi, downscale_factor, order=0))
+    rois = np.array(rois)
+    return rois, thresholded_stk, labels
+
+def stk_to_rois_original(stk, threshold, min_size, downscale_factor=2):
+    thresholded_stk = (stk > threshold).astype(float)
+    labels = measure.label(thresholded_stk, background=0)
+    labels_set = set(labels.flatten())
+    rois = []
+    for label in labels_set:
+        if label == 0: continue
+        if np.sum((labels==label).astype(int)) < min_size: continue
+        nroi = np.zeros((stk.shape[0], stk.shape[1]))
+        cx,cy = np.where(labels==label)
+        cx,cy = int(cx.mean()), int(cy.mean())
+        x,y = np.ogrid[0:nroi.shape[0], 0:nroi.shape[1]]
+        r = 4
+        mask =  (cx-x)**2 + (cy-y)**2 <= r*r
+        nroi[mask] = 1
+        #nroi[labels==label] = 1
+        rois.append(zoom(nroi, downscale_factor, order=0))
+    rois = np.array(rois)
+    #plt.figure()
+    #plt.imshow(rois.max(axis=0), cmap='gray')
+    #plt.show()
+    return rois, thresholded_stk, labels
+
+def stk_to_rois_test(stk, threshold, min_size, downscale_factor=2):
+    thresholded_stk = (stk > threshold).astype(float)
+    labels = measure.label(thresholded_stk, background=0)
+    labels_set = set(labels.flatten())
+    rois = []
+    for label in labels_set:
+        if label == 0: continue
+        if np.sum((labels==label).astype(int)) < min_size: continue
+        nroi = np.zeros((512, 512))
+        cx,cy = np.where(labels==label)
+        cx,cy = int(cx.mean()), int(cy.mean())
+        x,y = np.ogrid[0:512, 0:512]
+        r = 8
+        mask =  ((cx*2)-x)**2 + ((cy*2)-y)**2 <= r*r
+        nroi[mask] = 1
+        #nroi[labels==label] = 1
+        rois.append(nroi)
+    rois = np.array(rois)
+    #plt.figure()
+    #plt.imshow(rois.max(axis=0), cmap='gray')
+    #plt.show()
+    return rois, thresholded_stk, labels
+
+###################################
+# Pipeline Functions 
+###################################
 
 def prepare(data, flatten_fn, min_batch_size=100, downscale_factor=2, 
             clip_sz=15, clip_step=1, directory='.'):
@@ -186,60 +287,6 @@ def labels_to_images(directory=".", clip_sz=15, clip_step=1, downscale_factor=2,
         pickle.dump(nn_pred_stk_last_epoch, open(directory+"/pickles/nn_pred_stk_last_epoch.pickle", 'wb'), protocol=2)
     return
 
-def combine_stks(stks, weights):
-    combined_stks = []
-    for i in range(len(stks[0])):
-        combined_stk = np.zeros(stks[0][i].shape)
-        for j in range(len(stks)):
-            combined_stk = combined_stk + weights[j] * stks[j][i]
-        combined_stks.append(combined_stk)        
-    return combined_stks
-
-def stk_to_rois(stk, threshold, min_size, downscale_factor=2):
-    thresholded_stk = (stk > threshold).astype(float)
-    labels = measure.label(thresholded_stk, background=0)
-    labels_set = set(labels.flatten())
-    rois = []
-    for label in labels_set:
-        if label == 0: continue
-        if np.sum((labels==label).astype(int)) < min_size: continue
-        nroi = np.zeros((stk.shape[0], stk.shape[1]))
-        cx,cy = np.where(labels==label)
-        cx,cy = int(cx.mean()), int(cy.mean())
-        x,y = np.ogrid[0:nroi.shape[0], 0:nroi.shape[1]]
-        r = 4
-        mask =  (cx-x)**2 + (cy-y)**2 <= r*r
-        nroi[mask] = 1
-        #nroi[labels==label] = 1
-        rois.append(zoom(nroi, downscale_factor, order=0))
-    rois = np.array(rois)
-    #plt.figure()
-    #plt.imshow(rois.max(axis=0), cmap='gray')
-    #plt.show()
-    return rois, thresholded_stk, labels
-
-def stk_to_rois_new(stk, threshold, min_size, downscale_factor=2):
-    thresholded_stk = (stk > threshold).astype(float)
-    labels = measure.label(thresholded_stk, background=0)
-    labels_set = set(labels.flatten())
-    rois = []
-    for label in labels_set:
-        if label == 0: continue
-        if np.sum((labels==label).astype(int)) < min_size: continue
-        nroi = np.zeros((512, 512))
-        cx,cy = np.where(labels==label)
-        cx,cy = int(cx.mean()), int(cy.mean())
-        x,y = np.ogrid[0:512, 0:512]
-        r = 8
-        mask =  ((cx*2)-x)**2 + ((cy*2)-y)**2 <= r*r
-        nroi[mask] = 1
-        #nroi[labels==label] = 1
-        rois.append(nroi)
-    rois = np.array(rois)
-    #plt.figure()
-    #plt.imshow(rois.max(axis=0), cmap='gray')
-    #plt.show()
-    return rois, thresholded_stk, labels
 
 def find_postprocessing_hyperparameters(directory_list=["."], out_directory="."):
     threshold_grid = np.linspace(0.5,0.9,20) #[0.5, 0.9]
@@ -271,6 +318,7 @@ def find_postprocessing_hyperparameters(directory_list=["."], out_directory=".")
                 best_params = (ws, t, ms)
     pickle.dump(best_params, open(out_directory+"/pickles/best_postprocessing_params.pickle", 'wb'), protocol=2)
     return
+
     
 def images_to_score(directory_list=["."], out_directory=".", params_directory=".", params=None):
     if params is None:
@@ -296,185 +344,3 @@ def images_to_score(directory_list=["."], out_directory=".", params_directory=".
     print
     print str(test_score)
     return test_score
-
-"""
-def main():
-    if len(sys.argv) == 1:
-        print "Usage: python {} clip_sz clip_step min_batch_size num_epochs prefix [load]".format(sys.argv[0])
-        return
-    clip_sz = int(sys.argv[1])
-    clip_step = int(sys.argv[2])
-    min_batch_size = int(sys.argv[3])
-    num_epochs = int(sys.argv[4])
-    prefix = '' if (len(sys.argv) <= 5) else sys.argv[5]
-    load = True if (len(sys.argv) > 6 and sys.argv[6] == 'load') else False
-    num_hidden_nodes = 10
-    radius = 2
-    net = onelayer_7x7
-
-    data_raw = load_data()
-    data = preprocess(load_data(), radius)
-    train_data = data[0:8]
-    val_data = data[8:10]
-    test_data = data[10:12]
-       
-    # clips: list of 3d arrays, labels: list of 2-element vectors
-    train_clips_labels = [clips_and_labels_stk(t, clip_sz, clip_step) for t in train_data] 
-    val_clips_labels = [clips_and_labels_stk(t, clip_sz, clip_step) for t in val_data]
-    test_clips_labels = [clips_and_labels_stk(t, clip_sz, clip_step) for t in test_data]    
-   
-    # rotate clips to get even more training data
-    train_clips_labels_rot = [rotate_augment(tc, tl) for (tc, tl) in train_clips_labels]
-    val_clips_labels_rot = [rotate_augment(vc, vl) for (vc, vl) in val_clips_labels]
-   
-    # concatenate all training and validation examples 
-    train_clips_rot_all = [c for t in train_clips_labels_rot for c in t[0]]
-    train_labels_rot_all = [c for t in train_clips_labels_rot for c in t[1]]
-    val_clips_rot_all = [c for t in val_clips_labels_rot for c in t[0]]
-    val_labels_rot_all = [c for t in val_clips_labels_rot for c in t[1]]
-
-    # throw out some negative examples to help equalize pos/neg ratio
-    train_clips_rot_all, train_labels_rot_all = equalize_posneg(train_clips_rot_all, train_labels_rot_all)
-    val_clips_rot_all, val_labels_rot_all = equalize_posneg(val_clips_rot_all, val_labels_rot_all)
-         
-    # find a batch size
-    batch_size = min_batch_size
-    while len(train_clips_labels[0][0]) % batch_size != 0:
-        batch_size += 1
-
-    # ensure batch_size divides evenly into training clips
-    train_clips_rot_all = train_clips_rot_all[0:-(len(train_clips_rot_all)%batch_size)]
-    train_labels_rot_all = train_labels_rot_all[0:-(len(train_labels_rot_all)%batch_size)]
-    val_clips_rot_all = val_clips_rot_all[0:-(len(val_clips_rot_all)%batch_size)]
-    val_labels_rot_all = val_labels_rot_all[0:-(len(val_labels_rot_all)%batch_size)]
-
-    print "Number of training frames: {}".format(len(train_clips_rot_all))    
-    if not load:
-        # train neural net
-        nn_best_val, nn_last_epoch = train_nn(train_clips_rot_all, train_labels_rot_all, val_clips_rot_all, val_labels_rot_all, net, num_hidden_nodes, num_epochs, batch_size, prefix=prefix)
-        # classify data
-        train_nn_labels_best_val = [nn_best_val(t[0]) for t in train_clips_labels] 
-        val_nn_labels_best_val = [nn_best_val(t[0]) for t in val_clips_labels] 
-        test_nn_labels_best_val = [nn_best_val(t[0]) for t in test_clips_labels]
-        train_nn_labels_last_epoch = [nn_last_epoch(t[0]) for t in train_clips_labels] 
-        val_nn_labels_last_epoch = [nn_last_epoch(t[0]) for t in val_clips_labels] 
-        test_nn_labels_last_epoch = [nn_last_epoch(t[0]) for t in test_clips_labels]
-        # save results
-        pickle.dump(train_nn_labels_best_val, open(prefix+"nn_train_labels_best_val.pickle",'wb'))
-        pickle.dump(val_nn_labels_best_val, open(prefix+"nn_val_labels_best_val.pickle", 'wb'))
-        pickle.dump(test_nn_labels_best_val, open(prefix+"nn_test_labels_best_val.pickle", 'wb'))
-        pickle.dump(train_nn_labels_last_epoch, open(prefix+"nn_train_labels_last_epoch.pickle",'wb'))
-        pickle.dump(val_nn_labels_last_epoch, open(prefix+"nn_val_labels_last_epoch.pickle", 'wb'))
-        pickle.dump(test_nn_labels_last_epoch, open(prefix+"nn_test_labels_last_epoch.pickle", 'wb'))
-    
-    else:
-        train_nn_labels_best_val = pickle.load(open(prefix+"nn_train_labels_best_val.pickle",'rb'))
-        val_nn_labels_best_val = pickle.load(open(prefix+"nn_val_labels_best_val.pickle", 'rb'))
-        test_nn_labels_best_val = pickle.load(open(prefix+"nn_test_labels_best_val.pickle", 'rb'))
-        train_nn_labels_last_epoch = pickle.load(open(prefix+"nn_train_labels_last_epoch.pickle",'rb'))
-        val_nn_labels_last_epoch = pickle.load(open(prefix+"nn_val_labels_last_epoch.pickle", 'rb'))
-        test_nn_labels_last_epoch = pickle.load(open(prefix+"nn_test_labels_last_epoch.pickle", 'rb'))
-
-    # convert predictions back to 1/0 arrays
-    actual_train_labels = [t[1] for t in data_raw[0:8]]
-    actual_test_labels = [t[1] for t in data_raw[10:12]]
-    actual_val_labels = [t[1] for t in data_raw[8:10]]
-    #threshold, eps, min_samples, final_radius = train_threshold_hyperparameters(val_nn_labels_best_val[0], actual_val_labels[0], clip_sz, clip_step)
-    threshold, eps, min_samples, final_radius = (0.9, 0.0147, 10, 7.8)#(0.0254, 72, 7.8)
-    #threshold = None
-    print "threshold: {}\neps: {}\nmin_samples: {}\nradius: {}\n".format(threshold, eps, min_samples, final_radius)
-    train_nn_pred_stk_best_val = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in train_nn_labels_best_val] 
-    val_nn_pred_stk_best_val = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in val_nn_labels_best_val]
-    test_nn_pred_stk_best_val = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in test_nn_labels_best_val]
-    train_nn_pred_stk_last_epoch = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in train_nn_labels_last_epoch] 
-    val_nn_pred_stk_last_epoch = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in val_nn_labels_last_epoch]
-    test_nn_pred_stk_last_epoch = [labels_to_stk(x, (512/DOWNSCALE_FACTOR, 512/DOWNSCALE_FACTOR), clip_sz, clip_step, threshold) for x in test_nn_labels_last_epoch]
-
-    
-    # plot things
-    thresh = "_thresh" if threshold is not None else ""
-    plt.figure()
-    plt.imshow(train_data[0][0].squeeze(), cmap="gray")
-    plt.savefig(prefix+"nn_train_raw.png")
-    plt.figure()
-    plt.imshow(train_data[0][1], cmap="gray")
-    plt.savefig(prefix+"nn_train_actual.png")
-    plt.figure()
-    plt.imshow(train_nn_pred_stk_best_val[0], cmap="gray")
-    plt.savefig(prefix+"nn_train_pred_best_val"+str(thresh)+".png")
-    plt.figure()
-    plt.imshow(train_nn_pred_stk_last_epoch[0], cmap="gray")
-    plt.savefig(prefix+"nn_train_pred_last_epoch"+str(thresh)+".png")
-   
-    plt.figure()
-    plt.imshow(test_data[0][0].squeeze(), cmap="gray")
-    plt.savefig(prefix+"nn_test0_raw.png")
-    plt.figure()
-    plt.imshow(test_data[0][1], cmap="gray")
-    plt.savefig(prefix+"nn_test0_actual.png")
-    plt.figure()
-    plt.imshow(test_nn_pred_stk_best_val[0], cmap="gray")
-    plt.savefig(prefix+"nn_test0_pred_best_val"+str(thresh)+".png")
-    plt.figure()
-    plt.imshow(test_nn_pred_stk_last_epoch[0], cmap="gray")
-    plt.savefig(prefix+"nn_test0_pred_last_epoch"+str(thresh)+".png")
-
-    plt.figure()
-    plt.imshow(test_data[1][0].squeeze(), cmap="gray")
-    plt.savefig(prefix+"test1_raw.png")
-    plt.figure()
-    plt.imshow(test_data[1][1], cmap="gray")
-    plt.savefig(prefix+"nn_test1_actual.png")
-    plt.figure()
-    plt.imshow(test_nn_pred_stk_best_val[1], cmap="gray")
-    plt.savefig(prefix+"nn_test1_pred_best_val"+str(thresh)+".png")
-    plt.figure()
-    plt.imshow(test_nn_pred_stk_last_epoch[1], cmap="gray")
-    plt.savefig(prefix+"nn_test1_pred_last_epoch"+str(thresh)+".png")
-    
-    # convert stacked predictions to final ROI format
-    train_nn_pred_final = [nn_stk_pred_to_final_roi_format(x, eps, min_samples, final_radius) for x in train_nn_pred_stk_best_val]
-    val_nn_pred_final = [nn_stk_pred_to_final_roi_format(x, eps, min_samples, final_radius) for x in val_nn_pred_stk_best_val]
-    test_nn_pred_final = [nn_stk_pred_to_final_roi_format(x, eps, min_samples, final_radius) for x in test_nn_pred_stk_best_val]
-
-    # get final score
-    #print actual_train_labels[0].shape
-    #print train_nn_pred_final[0].shape
-    #print actual_test_labels[0].shape
-    #print test_nn_pred_final[0].shape
-    train_score = Score(None, None, actual_train_labels, train_nn_pred_final)
-    test_score = Score(None, None, actual_test_labels, test_nn_pred_final)
-    test0_score = Score(None, None, actual_test_labels[0:1], test_nn_pred_final[0:1])
-    test1_score = Score(None, None, actual_test_labels[1:2], test_nn_pred_final[1:2])
-    print str(train_score)
-    print
-    print str(test_score)
-    print
-    print str(test0_score)
-    print
-    print str(test1_score)
-
-    # plot things
-    train_score.plot()
-    test_score.plot()
-    test0_score.plot()
-    test1_score.plot()
-
-    plt.show()
-    return
-
-    plt.figure()
-    plt.imshow(train_nn_pred_final[0].max(axis=0), cmap="gray")
-    plt.savefig(prefix+"nn_train_final.png")
-
-    plt.figure()
-    plt.imshow(test_nn_pred_final[0].max(axis=0), cmap="gray")
-    plt.savefig(prefix+"nn_test_final.png")
-    
-    # show all the plots!
-    plt.show()
-    
-
-if __name__ == "__main__":
-    main()
-"""
